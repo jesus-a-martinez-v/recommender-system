@@ -29,5 +29,5 @@ pip install -r requirements.txt
 Once in the conda environment, run:
 
 ```bash
-juoyter notebook
+jupyter notebook
 ```
