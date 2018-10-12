@@ -4,7 +4,6 @@ import re
 import subprocess
 import time
 import xml.sax
-from collections import Counter
 
 import mwparserfromhell
 import numpy as np
@@ -14,8 +13,6 @@ from keras import Input
 from keras.layers import Embedding, Dot, Reshape
 from keras.models import Model
 from keras.utils import get_file
-from sklearn import svm
-from sklearn.linear_model import LinearRegression
 
 
 def get_wikipedia_dumps():
@@ -175,12 +172,12 @@ def similar_movies(movie, movies, normalized_movies, movie_to_index, top_n=10):
         movie_title = movies[c][0]
         distance = distances[c]
         print(c, movie_title, distance)
-        
+
+
 def similar_links(link, top_links, normalized_links, link_to_index, top_n=10):
     distances = np.dot(normalized_links, normalized_links[link_to_index[link]])
     closest = np.argsort(distances)[-top_n:]
-    
+
     for l in reversed(closest):
         distance = distances[l]
         print(l, top_links[l], distance)
-        
