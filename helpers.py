@@ -107,9 +107,6 @@ def create_wiki_xml_parser_and_handler():
     return parser, handler
 
 
-parser, handler = create_wiki_xml_parser_and_handler()
-
-
 def parse_dumps(parser, dumps_path):
     for line in subprocess.Popen(['bzcat'], stdin=open(dumps_path), stdout=subprocess.PIPE).stdout:
         try:
@@ -124,10 +121,92 @@ def write_movies(handler, output_path='generated/wp_movies.ndjson'):
             fout.write(f'{json.dumps(movie)}\n')
 
 
+def get_movie_embedding_model(top_links, movie_to_index, embedding_size=30):
+    link = Input(name='link', shape=(1,))
+    movie = Input(name='movie', shape=(1,))
+
+    link_embedding = Embedding(name='link_embedding',
+                               input_dim=len(top_links),
+                               output_dim=embedding_size)(link)
+    movie_embedding = Embedding(name='movie_embedding',
+                                input_dim=len(movie_to_index),
+                                output_dim=embedding_size)(movie)
+    dot = Dot(name='dot_product',
+              normalize=True,
+              axes=2)([link_embedding, movie_embedding])
+
+    merged = Reshape(target_shape=(1,))(dot)
+
+    model = Model(inputs=[link, movie], outputs=[merged])
+    model.compile(optimizer='nadam', loss='mse')
+
+    return model
+
+
+def batchifier(pairs, pairs_set, top_links, movie_to_index, positive_samples=50, negative_ratio=10):
+    batch_size = positive_samples * (1 + negative_ratio)
+    batch = np.zeros((batch_size, 3))
+
+    while True:
+        for index, (link_id, movie_id) in enumerate(random.sample(pairs, positive_samples)):
+            batch[index, :] = (link_id, movie_id, 1)
+
+        index = positive_samples
+
+        while index < batch_size:
+            movie_id = random.randrange(len(movie_to_index))
+            link_id = random.randrange(len(top_links))
+
+            if not (link_id, movie_id) in pairs_set:
+                batch[index, :] = (link_id, movie_id, -1)
+                index += 1
+
+        np.random.shuffle(batch)
+
+        yield {'link': batch[:, 0],
+               'movie': batch[:, 1]}, batch[:, 2]
+
+
+def similar_movies(movie, movies, normalized_movies, movie_to_index, top_n=10):
+    distances = np.dot(normalized_movies, normalized_movies[movie_to_index[movie]])
+    closest = np.argsort(distances)[-top_n:]
+
+    for c in reversed(closest):
+        movie_title = movies[c][0]
+        distance = distances[c]
+        print(c, movie_title, distance)
+
+def gross(movie):
+    v = movie[1].get('gross')
+
+    if not v or ' ' not in v:
+        return None
+
+    v, unit = v.split(' ', 1)
+    unit = unit.lower()
+
+    if unit not in {'million', 'billion'}:
+        return None
+
+    if not v.startswith('$'):
+        return None
+
+    try:
+        v = float(v[1:])
+    except ValueError:
+        return None
+
+    if unit == 'billion':
+        v *= 1000
+
+    return v
+
+
 if __name__ == '__main__':
     # dumps = get_wikipedia_dumps()
     # print(dumps)
     # path = download_dump(dumps)
+    # parser, handler = create_wiki_xml_parser_and_handler()
     # parse_dumps(parser, path)
     # write_movies(handler)
 
@@ -159,81 +238,21 @@ if __name__ == '__main__':
     print(len(top_links))
     print(len(movie_to_index))
 
-
-    def get_movie_embedding_model(top_links, movie_to_index, embedding_size=50):
-        link = Input(name='link', shape=(1,))
-        movie = Input(name='movie', shape=(1,))
-
-        link_embedding = Embedding(name='link_embedding',
-                                   input_dim=len(top_links),
-                                   output_dim=embedding_size)(link)
-        movie_embedding = Embedding(name='movie_embedding',
-                                    input_dim=len(movie_to_index),
-                                    output_dim=embedding_size)(movie)
-        dot = Dot(name='dot_product',
-                  normalize=True,
-                  axes=2)([link_embedding, movie_embedding])
-
-        merged = Reshape(target_shape=(1,))(dot)
-
-        model = Model(inputs=[link, movie], outputs=[merged])
-        model.compile(optimizer='nadam', loss='mse')
-
-        return model
-
-
     model = get_movie_embedding_model(top_links, movie_to_index)
     model.summary()
 
     random.seed(5)
 
-
-    def batchifier(pairs, pairs_set, top_links, movie_to_index, positive_samples=50, negative_ratio=10):
-        batch_size = positive_samples * (1 + negative_ratio)
-        batch = np.zeros((batch_size, 3))
-
-        while True:
-            for index, (link_id, movie_id) in enumerate(random.sample(pairs, positive_samples)):
-                batch[index, :] = (link_id, movie_id, 1)
-
-            index = positive_samples
-
-            while index < batch_size:
-                movie_id = random.randrange(len(movie_to_index))
-                link_id = random.randrange(len(top_links))
-
-                if not (link_id, movie_id) in pairs_set:
-                    batch[index, :] = (link_id, movie_id, -1)
-                    index += 1
-
-            np.random.shuffle(batch)
-
-            yield {'link': batch[:, 0],
-                   'movie': batch[:, 1]}, batch[:, 2]
-
-
     positive_samples_per_batch = 512
 
     model.fit_generator(batchifier(pairs, pairs_set, top_links, movie_to_index, positive_samples_per_batch),
                         epochs=15,
-                        steps_per_epoch=len(pairs),
-                        verbose=2)
+                        steps_per_epoch=len(pairs) // positive_samples_per_batch)
 
     movie = model.get_layer('movie_embedding')
     movie_weights = movie.get_weights()[0]
     movie_lengths = np.linalg.norm(movie_weights, axis=1)
     normalized_movies = (movie_weights.T / movie_lengths).T
-
-
-    def similar_movies(movie, movies, normalized_movies, movie_to_index, top_n=10):
-        distances = np.dot(normalized_movies, normalized_movies[movie_to_index[movie]])
-        closest = np.argsort(distances)[-top_n:]
-
-        for c in reversed(closest):
-            movie_title = movies[c][0]
-            distance = distances[c]
-            print(c, movie_title, distance)
-
 
     similar_movies('Rogue One', movies, normalized_movies, movie_to_index)
 
@@ -288,34 +307,9 @@ if __name__ == '__main__':
     error = (regressor.predict(rotten_X[TRAINING_CUT_OFF:]) - rotten_y[TRAINING_CUT_OFF:])
     print(f'Mean Squared Error: {np.mean(error ** 2)}')
 
-    error = (regressor.mean(rotten_y[:TRAINING_CUT_OFF]) - rotten_y[TRAINING_CUT_OFF:])
+    error = (np.mean(rotten_y[:TRAINING_CUT_OFF]) - rotten_y[TRAINING_CUT_OFF:])
     print(f'Mean Squared Error: {np.mean(error ** 2)}')
 
-
-    def gross(movie):
-        v = movie[1].get('gross')
-
-        if not v or ' ' not in v:
-            return None
-
-        v, unit = v.split(' ', 1)
-        unit = unit.lower()
-
-        if unit not in {'million', 'billion'}:
-            return None
-
-        if not v.startswith('$'):
-            return None
-
-        try:
-            v = float(v[1:])
-        except ValueError:
-            return None
-
-        if unit == 'billion':
-            v *= 1000
-
-        return v
 
     movie_gross = [gross(movie) for movie in movies]
     movie_gross = np.asarray([g for g in movie_gross if g is not None])
