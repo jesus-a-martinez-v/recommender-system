@@ -13,7 +13,7 @@ idna==2.7
 Markdown==3.0.1
 marshmallow==2.16.0
 mwparserfromhell==0.5.1
-numpy==1.15.2
+numpy==1.22.0
 pathlib2==2.3.2
 protobuf==3.6.1
 pytz==2018.5
